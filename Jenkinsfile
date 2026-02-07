@@ -25,7 +25,7 @@ pipeline {
     stage('Deploy') {
       steps {
         sh 'echo "deploying app jar..."'
-        sh 'scp -i /var/jenkins_home/.ssh/id_ed25519 target/*.jar osboxes@192.168.1.161:/home/osboxes/artifacts/spring-boot-private/'
+        sh 'scp -i /var/jenkins_home/.ssh/id_ed25519 target/*.jar osboxes@192.168.0.30:/home/osboxes/artifacts/spring-boot-private/'
         sh 'ssh osboxes@192.168.0.30 -i /var/jenkins_home/.ssh/id_ed25519 "sudo /opt/spring-boot-app/deploy.sh /home/osboxes/artifacts/spring-boot-private/demo-0.0.1-SNAPSHOT.jar"'
         sh 'echo "Deploy completado"'
       }
