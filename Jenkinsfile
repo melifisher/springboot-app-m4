@@ -1,40 +1,75 @@
 pipeline {
   agent any
   environment {
-    IMAGE_NAME = "demo-ci-cd:latest"
+    REMOTE_IP = "192.168.0.30"
+    REMOTE_USER = "melifisher"
+    SSH_KEY = "/var/jenkins_home/.ssh/id_ed25519"
+    REMOTE_DIR = "/home/osboxes/artifacts/spring-boot-private"
+    DEPLOY_SCRIPT = "/opt/spring-boot-app/deploy.sh"
+    JAR_NAME = "demo-0.0.1-SNAPSHOT.jar"
   }
   stages {
     stage('Checkout') {
       steps {
-        //checkout scm
-        git branch: 'main', url: 'https://github.com/melifisher/springboot-app-m4.git', credentialsId: 'df06cc5f-87aa-44c2-a3dd-46554f2a3945'
-        sh 'echo "Checkout del repositorio completado..."'
+        git branch: 'main', url: 'https://github.com/melifisher/springboot-app-m4.git', credentialsId: '1-github-token'
+        sh 'echo "checkout del repositorio completado"'
       }
     }
+    
     stage('Build') {
       steps {
-          sh 'mvn clean install'
-         }
-    }
-    stage('Build Docker Image') {
-      steps {
-        //sh 'docker build -t $IMAGE_NAME .'
-        sh 'echo "Building docker image..."'
+        sh 'mvn clean compile'
       }
     }
-    stage('Deploy') {
+
+    stage('Unit Tests & Package') {
       steps {
-        sh 'echo "deploying app jar..."'
-        sh 'scp -i /var/jenkins_home/.ssh/id_ed25519 target/*.jar osboxes@192.168.0.30:/home/osboxes/artifacts/spring-boot-private/'
-        sh 'ssh osboxes@192.168.0.30 -i /var/jenkins_home/.ssh/id_ed25519 "sudo /opt/spring-boot-app/deploy.sh /home/osboxes/artifacts/spring-boot-private/demo-0.0.1-SNAPSHOT.jar"'
-        sh 'echo "Deploy completado"'
+        sh 'echo "Ejecutando tests y creando JAR..."'
+        sh 'mvn package'
+      }
+    }
+
+    stage('SAST - Semgrep') {
+      steps {
+        sh 'semgrep --config=auto .'
+  //              sh 'docker run --rm -v "D:\tmp\semgrep_test":/src semgrep/semgrep semgrep --config=auto --output /src/semgrep_result.json /src'
+      }
+    }
+
+    stage('Transfer Artifact') {
+      steps {
+        sh 'echo "Enviando JAR al servidor..."'
+        // Transferimos el archivo una sola vez
+        sh "scp -o StrictHostKeyChecking=no -i ${SSH_KEY} target/${JAR_NAME} ${REMOTE_USER}@${REMOTE_IP}:${REMOTE_DIR}/"
+      }
+    }
+
+    stage('Deploy Canary (8082)') {
+      steps {
+        sh 'echo "Iniciando Canary Release en puerto 8082..."'
+        // AQUI ESTABA EL ERROR: Agregamos el argumento '8082' al final
+        sh "ssh -i ${SSH_KEY} ${REMOTE_USER}@${REMOTE_IP} 'sudo ${DEPLOY_SCRIPT} ${REMOTE_DIR}/${JAR_NAME} 8082'"
+      }
+    }
+
+    stage('Deploy Production (8081)') {
+      steps {
+        sh 'echo "Promoviendo a Producción en puerto 8081..."'
+        // Si el paso anterior no falló, desplegamos en 8081
+        sh "ssh -i ${SSH_KEY} ${REMOTE_USER}@${REMOTE_IP} 'sudo ${DEPLOY_SCRIPT} ${REMOTE_DIR}/${JAR_NAME} 8081'"
       }
     }
   }
+  
   post {
     always {
-      //junit '**/target/surefire-reports/*.xml'
       archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+    }
+    success {
+      echo 'Despliegue completado exitosamente en ambos nodos.'
+    }
+    failure {
+      echo 'El despliegue falló. Revisa los logs.'
     }
   }
 }
