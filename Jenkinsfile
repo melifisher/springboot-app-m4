@@ -31,8 +31,18 @@ pipeline {
 
     stage('SAST - Semgrep') {
       steps {
-        sh 'semgrep --config=auto .'
-  //              sh 'docker run --rm -v "D:\tmp\semgrep_test":/src semgrep/semgrep semgrep --config=auto --output /src/semgrep_result.json /src'
+        sh '''
+        echo "Running SAST scan..."
+
+        mkdir -p reports
+
+        semgrep \
+          --config=p/java \
+          --config=p/security-audit \
+          --json \
+          --output reports/semgrep-report.json \
+          .
+        '''
       }
     }
 
@@ -44,14 +54,6 @@ pipeline {
       }
     }
 
-    stage('Deploy Canary (8082)') {
-      steps {
-        sh 'echo "Iniciando Canary Release en puerto 8082..."'
-        // AQUI ESTABA EL ERROR: Agregamos el argumento '8082' al final
-        sh "ssh -i ${SSH_KEY} ${REMOTE_USER}@${REMOTE_IP} 'sudo ${DEPLOY_SCRIPT} ${REMOTE_DIR}/${JAR_NAME} 8082'"
-      }
-    }
-
     stage('Deploy Production (8081)') {
       steps {
         sh 'echo "Promoviendo a Producción en puerto 8081..."'
@@ -59,11 +61,26 @@ pipeline {
         sh "ssh -i ${SSH_KEY} ${REMOTE_USER}@${REMOTE_IP} 'sudo ${DEPLOY_SCRIPT} ${REMOTE_DIR}/${JAR_NAME} 8081'"
       }
     }
+
+    stage('DAST - OWASP ZAP') {
+      steps {
+        sh '''
+        mkdir -p reports
+        
+        /opt/zap/zap-baseline.py \
+          -t http://${REMOTE_IP}:8081 \
+          -r reports/zap-report.html \
+          -J reports/zap-report.json \
+          || true
+        '''
+      }
+    }
+
   }
   
   post {
     always {
-      archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+      archiveArtifacts artifacts: 'reports/*.json, reports/*.html', fingerprint: true
     }
     success {
       echo 'Despliegue completado exitosamente en ambos nodos.'
