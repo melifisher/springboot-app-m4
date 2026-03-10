@@ -64,15 +64,9 @@ pipeline {
 
     stage('DAST - OWASP ZAP') {
       steps {
-        sh '''
-        mkdir -p reports
-        
-        /opt/zap/zap-baseline.py \
-          -t http://${REMOTE_IP}:8081 \
-          -r reports/zap-report.html \
-          -J reports/zap-report.json \
-          || true
-        '''
+        sh "
+        /ZAP_2.16.0/zap.sh -cmd -daemon -port 8090 -quickurl http://${REMOTE_IP}:8081 -quickout ${WORKSPACE}/zap-report.html || true
+        "
       }
     }
 
