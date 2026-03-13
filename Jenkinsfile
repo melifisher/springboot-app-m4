@@ -57,6 +57,9 @@ pipeline {
     }
 
     stage('SAST - Semgrep') {
+      when {
+        expression { return !params.SKIP_BUILD }
+      }
       steps {
         sh '''
     set -ex
