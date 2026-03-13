@@ -1,5 +1,10 @@
 pipeline {
   agent any
+
+  parameters {
+    booleanParam(name: 'SKIP_BUILD', defaultValue: false, description: 'Saltar build')
+  }
+
   environment {
     REMOTE_IP = "192.168.0.30"
     REMOTE_USER = "melifisher"
@@ -8,79 +13,146 @@ pipeline {
     DEPLOY_SCRIPT = "/opt/spring-boot-app/deploy.sh"
     JAR_NAME = "demo-0.0.1-SNAPSHOT.jar"
   }
+
   stages {
+
     stage('Checkout') {
       steps {
-        git branch: 'main', url: 'https://github.com/melifisher/springboot-app-m4.git', credentialsId: '1-github-token'
-        sh 'echo "checkout del repositorio completado"'
+        git branch: 'main',
+            url: 'https://github.com/melifisher/springboot-app-m4.git',
+            credentialsId: '1-github-token'
+
+        sh '''
+        set -ex
+        echo "Repositorio descargado correctamente"
+        git log -1
+        '''
       }
     }
-    
+
     stage('Build') {
+      when {
+        expression { return !params.SKIP_BUILD }
+      }
       steps {
-        sh 'mvn clean compile'
+        sh '''
+        set -ex
+        echo "Compilando proyecto"
+        mvn clean compile
+        '''
       }
     }
 
     stage('Unit Tests & Package') {
+      when {
+        expression { return !params.SKIP_BUILD }
+      }
       steps {
-        sh 'echo "Ejecutando tests y creando JAR..."'
-        sh 'mvn package'
+        sh '''
+        set -ex
+        echo "Ejecutando tests y generando JAR..."
+        mvn package
+        '''
       }
     }
 
     stage('SAST - Semgrep') {
       steps {
         sh '''
-        echo "Running SAST scan..."
+    set -ex
 
-        mkdir -p reports
+    export PATH=$PATH:/var/jenkins_home/.local/bin
 
-        semgrep \
-          --config=p/java \
-          --config=p/security-audit \
-          --json \
-          --output reports/semgrep-report.json \
-          .
-        '''
+    echo "Running SAST scan..."
+
+    semgrep scan \
+      --config=auto \
+      --config=p/security-audit \
+      --json \
+      --output reports/semgrep-report.json \
+      .
+    '''
+      }
+    }
+
+    stage('SCA - Dependency Check') {
+      steps {
+    sh '''
+	  echo "Running SCA scan..."
+  
+    mvn org.owasp:dependency-check-maven:check
+    '''
       }
     }
 
     stage('Transfer Artifact') {
       steps {
-        sh 'echo "Enviando JAR al servidor..."'
-        // Transferimos el archivo una sola vez
-        sh "scp -o StrictHostKeyChecking=no -i ${SSH_KEY} target/${JAR_NAME} ${REMOTE_USER}@${REMOTE_IP}:${REMOTE_DIR}/"
+        sh '''
+        set -ex
+
+        echo "Transfiriendo artefacto al servidor..."
+
+        scp -vvv \
+          -o StrictHostKeyChecking=no \
+          -i ${SSH_KEY} \
+          target/${JAR_NAME} \
+          ${REMOTE_USER}@${REMOTE_IP}:${REMOTE_DIR}/
+        '''
       }
     }
 
     stage('Deploy Production (8081)') {
       steps {
-        sh 'echo "Promoviendo a Producción en puerto 8081..."'
-        // Si el paso anterior no falló, desplegamos en 8081
-        sh "ssh -i ${SSH_KEY} ${REMOTE_USER}@${REMOTE_IP} 'sudo ${DEPLOY_SCRIPT} ${REMOTE_DIR}/${JAR_NAME} 8081'"
+        sh '''
+        set -ex
+
+        echo "Iniciando despliegue remoto..."
+
+        ssh -vvv -i ${SSH_KEY} ${REMOTE_USER}@${REMOTE_IP} "
+          echo 'Servidor:' \$(hostname)
+          echo 'Directorio:' ${REMOTE_DIR}
+          ls -lh ${REMOTE_DIR}
+
+          sudo ${DEPLOY_SCRIPT} ${REMOTE_DIR}/${JAR_NAME} 8081
+        "
+        '''
       }
     }
 
     stage('DAST - OWASP ZAP') {
       steps {
-        sh "
-        /ZAP_2.16.0/zap.sh -cmd -daemon -port 8090 -quickurl http://${REMOTE_IP}:8081 -quickout ${WORKSPACE}/zap-report.html || true
-        "
+        sh '''
+        set -ex
+
+        echo "Iniciando escaneo DAST con ZAP..."
+
+        /ZAP_2.16.0/zap.sh \
+          -cmd \
+          -daemon \
+          -port 8090 \
+          -config api.disablekey=true \
+          -quickurl http://${REMOTE_IP}:8081 \
+          -quickout ${WORKSPACE}/zap-report.html \
+          -addonupdate \
+          -verbose || true
+        '''
       }
     }
 
   }
-  
+
   post {
     always {
-      archiveArtifacts artifacts: 'reports/*.json, reports/*.html', fingerprint: true
+      echo "Guardando reportes..."
+      archiveArtifacts artifacts: 'reports/*.json, *.html', fingerprint: true
     }
+
     success {
-      echo 'Despliegue completado exitosamente en ambos nodos.'
+      echo 'Despliegue completado exitosamente.'
     }
+
     failure {
-      echo 'El despliegue falló. Revisa los logs.'
+      echo 'El pipeline falló. Revisa los logs detallados arriba.'
     }
   }
 }
